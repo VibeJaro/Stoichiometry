@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChemCalc Labor-Tool</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Vue 3 (Production) -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+
+    <style>
+        :root { --primary: #2563eb; --bg: #f1f5f9; }
+        body { background-color: var(--bg); font-family: system-ui, -apple-system, sans-serif; padding-bottom: 120px; color: #1e293b; }
+        
+        .app-container { max-width: 1200px; margin: 30px auto; padding: 0 15px; }
+        
+        .chem-card {
+            background: white;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+            margin-bottom: 2rem;
+            overflow: visible; /* Wichtig für Dropdowns! */
+        }
+        
+        .chem-header {
+            background: #f8fafc; padding: 1rem 1.5rem; border-bottom: 1px solid #e2e8f0;
+            font-weight: 600; display: flex; justify-content: space-between; align-items: center;
+        }
+
+        .mol-preview {
+            width: 110px; height: 85px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
+            display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;
+        }
+        .mol-preview img { max-width: 95%; max-height: 95%; object-fit: contain; padding: 2px; }
+
+        /* Dropdown Styling */
+        .search-wrapper { position: relative; }
+        .suggestions-list {
+            position: absolute; top: 100%; left: 0; right: 0;
+            background: white; border: 1px solid #cbd5e1; border-radius: 0 0 6px 6px;
+            z-index: 1000; max-height: 200px; overflow-y: auto;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+            list-style: none; padding: 0; margin: 0;
+        }
+        .suggestions-list li {
+            padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f1f5f9; font-size: 0.9rem;
+        }
+        .suggestions-list li:hover { background-color: #eff6ff; color: var(--primary); }
+        .suggestions-list li small { color: #64748b; display: block; font-size: 0.75rem; }
+
+        .table td { vertical-align: middle; }
+        .form-control:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+        
+        .magic-box { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%); color: white; }
+        .magic-textarea { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; }
+
+        [v-cloak] { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="app" v-cloak class="app-container">
+    
+    <div class="d-flex justify-content-between align-items-end mb-4">
+        <div>
+            <h1 class="text-primary fw-bold mb-1">ChemCalc Labor-Tool</h1>
+            <p class="text-muted mb-0 small">Live-Suche • Bi-direktionale Ausbeute • Struktur-Check</p>
+        </div>
+        <div>
+            <button @click="loadExample" class="btn btn-outline-primary btn-sm me-2">Beispiel</button>
+            <button @click="resetAll" class="btn btn-outline-danger btn-sm">Reset</button>
+        </div>
+    </div>
+
+    <!-- Edukte & Reagenzien -->
+    <div class="chem-card">
+        <div class="chem-header">
+            <span>Edukte & Reagenzien</span>
+            <button @click="addReactant" class="btn btn-sm btn-primary">+ Zeile</button>
+        </div>
+        <div class="table-responsive" style="overflow-x: visible;"> <!-- Visible für Dropdown -->
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light text-muted text-uppercase small">
+                    <tr>
+                        <th class="text-center" width="40">Lim.</th>
+                        <th width="120">Struktur</th>
+                        <th width="35%">Suche (Name/SMILES)</th>
+                        <th>MW</th>
+                        <th>Äq.</th>
+                        <th>mmol</th>
+                        <th>Masse (mg)</th>
+                        <th width="30"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="(item, i) in reactants" :key="item.id" :class="{'table-active': item.isLimiting}">
+                        <td class="text-center">
+                            <input type="radio" name="limiting" :checked="item.isLimiting" @change="setLimiting(i)">
+                        </td>
+                        <td>
+                            <div class="mol-preview">
+                                <div v-if="item.loading" class="spinner-border spinner-border-sm text-primary"></div>
+                                <img v-else-if="item.imgUrl" :src="item.imgUrl">
+                                <span v-else class="text-muted small text-center p-2">Kein<br>Bild</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="search-wrapper">
+                                <input type="text" class="form-control form-control-sm" 
+                                       v-model="item.input" 
+                                       @input="handleInput(item)"
+                                       @blur="hideSuggestions(item)"
+                                       placeholder="Name oder SMILES tippen..."
+                                       autocomplete="off">
+                                
+                                <!-- Die Auswahlliste -->
+                                <ul v-if="item.suggestions.length > 0" class="suggestions-list">
+                                    <li v-for="sug in item.suggestions" @mousedown="selectSuggestion(item, sug)">
+                                        <strong>{{ sug }}</strong>
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <!-- Feedback was gefunden wurde -->
+                            <div v-if="item.foundName" class="mt-1 lh-1">
+                                <small class="text-success fw-bold">
+                                    <i class="bi bi-check-circle"></i> Erkannt:
+                                </small>
+                                <small class="text-muted d-block text-truncate" style="max-width: 300px;">{{ item.foundName }}</small>
+                            </div>
+                            <div v-if="item.error" class="mt-1">
+                                <small class="text-danger"><i class="bi bi-exclamation-circle"></i> {{ item.error }}</small>
+                            </div>
+                        </td>
+                        <td><strong>{{ item.mw || '-' }}</strong></td>
+                        <td>
+                            <input type="number" class="form-control form-control-sm" step="0.1"
+                                   v-model.number="item.eq" :disabled="item.isLimiting" @input="calcFromEq(item)">
+                        </td>
+                        <td>
+                            <input type="number" class="form-control form-control-sm" step="0.1"
+                                   v-model.number="item.mmol" @input="calcFromMmol(item)">
+                        </td>
+                        <td>
+                            <input type="number" class="form-control form-control-sm" step="1"
+                                   v-model.number="item.mass" @input="calcFromMass(item)">
+                        </td>
+                        <td>
+                            <button v-if="reactants.length > 1" @click="reactants.splice(i, 1)" class="btn btn-link text-danger p-0 text-decoration-none">&times;</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Lösungsmittel -->
+        <div class="col-md-6">
+            <div class="chem-card h-100">
+                <div class="chem-header">
+                    <span>Lösungsmittel</span>
+                    <button @click="addSolvent" class="btn btn-sm btn-secondary">+ Neu</button>
+                </div>
+                <div class="p-3">
+                    <div v-for="(s, i) in solvents" :key="i" class="d-flex gap-2 mb-2">
+                        <input type="number" class="form-control form-control-sm" style="width: 80px" placeholder="Vol" v-model.number="s.vol">
+                        <span class="align-self-center small text-muted">mL</span>
+                        <input type="text" class="form-control form-control-sm" placeholder="Name (z.B. DCM)" v-model="s.name">
+                        <button class="btn btn-outline-danger btn-sm py-0" @click="solvents.splice(i, 1)">&times;</button>
+                    </div>
+                    <div class="mt-3 pt-3 border-top d-flex justify-content-between small">
+                        <span class="text-muted">Volumen: <strong>{{ totalVol }} mL</strong></span>
+                        <span class="text-muted">Konz: <strong>{{ concentration }} M</strong></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Produkt (mit Bi-direktionaler Ausbeute) -->
+        <div class="col-md-6">
+            <div class="chem-card h-100">
+                <div class="chem-header">Erwartetes Produkt</div>
+                <div class="p-3">
+                    <div class="d-flex gap-3 mb-3">
+                        <div class="mol-preview">
+                            <div v-if="product.loading" class="spinner-border spinner-border-sm text-primary"></div>
+                            <img v-else-if="product.imgUrl" :src="product.imgUrl">
+                            <span v-else class="text-muted small">-</span>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="search-wrapper">
+                                <input type="text" class="form-control form-control-sm" 
+                                       v-model="product.input" 
+                                       @input="handleInput(product)"
+                                       @blur="hideSuggestions(product)"
+                                       placeholder="Produkt Name / SMILES" autocomplete="off">
+                                <ul v-if="product.suggestions.length > 0" class="suggestions-list">
+                                    <li v-for="sug in product.suggestions" @mousedown="selectSuggestion(product, sug)">
+                                        <strong>{{ sug }}</strong>
+                                    </li>
+                                </ul>
+                            </div>
+                            <div v-if="product.foundName" class="mt-1 lh-1">
+                                <small class="text-muted">{{ product.foundName }}</small>
+                            </div>
+                            <div class="mt-2 small">
+                                MW: <strong>{{ product.mw || '-' }}</strong> &nbsp;|&nbsp; Theo: <strong class="text-primary">{{ theoMass }} mg</strong>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- DIE NEUE LOGIK: MASSE ODER PROZENT -->
+                    <div class="alert alert-light border p-2">
+                        <label class="form-label small fw-bold text-muted mb-1">Ergebnisberechnung:</label>
+                        <div class="row g-2 align-items-center">
+                            <div class="col-6">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text bg-white">Ist-Masse</span>
+                                    <input type="number" class="form-control fw-bold text-primary" 
+                                           v-model.number="product.actualMass" 
+                                           @input="calcYieldFromActualMass" 
+                                           placeholder="mg">
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text bg-white">Ausbeute</span>
+                                    <input type="number" class="form-control" 
+                                           v-model.number="product.yieldPercent" 
+                                           @input="calcActualMassFromYield" 
+                                           placeholder="%">
+                                    <span class="input-group-text">%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto-Text -->
+    <div class="chem-card magic-box border-0">
+        <div class="chem-header bg-transparent border-0 text-white">
+            <span>✨ Experimentelle Vorschrift</span>
+        </div>
+        <div class="p-3">
+            <textarea class="form-control magic-textarea" rows="4" readonly>{{ generatedProcedure }}</textarea>
+            <div class="d-flex justify-content-end mt-2">
+                <button class="btn btn-sm btn-light text-primary fw-bold" @click="copyText">Text kopieren</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+    const { createApp } = Vue;
+
+    createApp({
+        data() {
+            return {
+                debounceMap: new Map(),
+                reactants: [
+                    { id: 1, input: 'Benzaldehyde', suggestions: [], foundName: '', mw: 0, eq: 1.0, mmol: 0, mass: 0, isLimiting: true, imgUrl: '', loading: false, error: '' },
+                    { id: 2, input: '', suggestions: [], foundName: '', mw: 0, eq: 1.2, mmol: 0, mass: 0, isLimiting: false, imgUrl: '', loading: false, error: '' }
+                ],
+                solvents: [ { vol: 10, name: 'Ethanol' } ],
+                product: { input: '', suggestions: [], foundName: '', mw: 0, imgUrl: '', loading: false, yieldPercent: null, actualMass: null, error: '' }
+            }
+        },
+        computed: {
+            limiting() { return this.reactants.find(r => r.isLimiting) || this.reactants[0]; },
+            totalVol() { return this.solvents.reduce((a, b) => a + (b.vol || 0), 0); },
+            concentration() {
+                if (!this.totalVol || !this.limiting.mmol) return "0.00";
+                return (this.limiting.mmol / this.totalVol).toFixed(2);
+            },
+            theoMass() {
+                if (!this.product.mw || !this.limiting.mmol) return 0;
+                return (this.limiting.mmol * this.product.mw).toFixed(1);
+            },
+            generatedProcedure() {
+                const lr = this.limiting;
+                const others = this.reactants.filter(r => !r.isLimiting && r.input);
+                const solvs = this.solvents.map(s => s.name).join(' and ') || 'solvent';
+                const lrName = lr.foundName || lr.input || "starting material";
+                
+                let text = `To a solution of ${lrName} (${lr.mass} mg, ${lr.mmol} mmol, 1.0 eq.) in ${solvs} (${this.totalVol} mL) `;
+                if (others.length) {
+                    text += "was added ";
+                    text += others.map(r => `${r.foundName||r.input||'reagent'} (${r.mass} mg, ${r.mmol} mmol, ${r.eq} eq.)`).join(' and ');
+                    text += ". ";
+                } else {
+                    text += "was added the reagents. ";
+                }
+                text += "The mixture was stirred until conversion was complete. ";
+                
+                const prodName = this.product.foundName || this.product.input || "the product";
+                if (this.product.actualMass) {
+                    text += `${prodName} was isolated (${this.product.actualMass} mg, ${this.product.yieldPercent}%).`;
+                } else {
+                    text += `The crude product was isolated.`;
+                }
+                return text;
+            }
+        },
+        mounted() {
+            this.handleInput(this.reactants[0]);
+        },
+        methods: {
+            // --- SEARCH & DROPDOWN LOGIC ---
+            handleInput(item) {
+                item.suggestions = []; // Clear suggestions immediately on typing
+                
+                if (this.debounceMap.has(item)) clearTimeout(this.debounceMap.get(item));
+                
+                this.debounceMap.set(item, setTimeout(() => {
+                    this.processSearch(item);
+                }, 400));
+            },
+
+            async processSearch(item) {
+                if (!item.input || item.input.trim().length < 2) return;
+                
+                const input = item.input.trim();
+                // Erkennen ob es ein SMILES Code ist (enthält typische Zeichen aber keine Leerzeichen)
+                const isLikelySmiles = /[=#\[\]]/.test(input) && !input.includes(' ');
+
+                if (isLikelySmiles) {
+                    // Bei SMILES direkt suchen, keine Vorschläge
+                    this.fetchDataBySMILES(item, input);
+                } else {
+                    // Bei Namen: Erst Autocomplete fragen
+                    const suggestions = await this.fetchAutocomplete(input);
+                    if (suggestions && suggestions.length > 0) {
+                        item.suggestions = suggestions;
+                        // Wir laden noch keine Daten, der User soll wählen.
+                        // Optional: Wenn er nichts wählt, nehmen wir den ersten nach einer Pause?
+                        // Besser: Wir suchen parallel den exakten Match, falls vorhanden.
+                        this.fetchDataByName(item, input, false); // false = don't override if not exact
+                    } else {
+                        // Keine Vorschläge? Versuch direkten Match
+                        this.fetchDataByName(item, input, true);
+                    }
+                }
+            },
+
+            selectSuggestion(item, suggestion) {
+                item.input = suggestion;
+                item.suggestions = []; // Hide list
+                this.fetchDataByName(item, suggestion, true);
+            },
+
+            hideSuggestions(item) {
+                // Delay hide so click event registers
+                setTimeout(() => { item.suggestions = []; }, 200);
+            },
+
+            // --- API CALLS ---
+            async fetchAutocomplete(query) {
+                try {
+                    const res = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/autocomplete/compound/shrink/${encodeURIComponent(query)}?limit=6`);
+                    const json = await res.json();
+                    return json.dictionary_terms?.compound || [];
+                } catch { return []; }
+            },
+
+            async fetchDataByName(item, name, force) {
+                item.loading = true; item.error = '';
+                try {
+                    // 1. Get CID
+                    let res = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(name)}/cids/JSON`);
+                    let json = await res.json();
+                    let cid = json.IdentifierList?.CID?.[0];
+                    
+                    if (!cid) throw new Error("Nicht gefunden");
+                    
+                    // 2. Get Details
+                    await this.applyDataFromCID(item, cid);
+
+                } catch (e) {
+                    if (force) {
+                        item.mw = 0; item.imgUrl = ''; 
+                        item.error = "Nichts gefunden";
+                    }
+                } finally {
+                    item.loading = false;
+                }
+            },
+
+            async fetchDataBySMILES(item, smiles) {
+                item.loading = true; item.error = '';
+                try {
+                    // POST request ist sicherer für komplexe SMILES, aber GET geht meistens auch
+                    // Wir nutzen hier GET mit SMILES -> CID
+                    let res = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${encodeURIComponent(smiles)}/cids/JSON`);
+                    let json = await res.json();
+                    let cid = json.IdentifierList?.CID?.[0];
+                    
+                    if (!cid) throw new Error("Ungültiger SMILES");
+
+                    await this.applyDataFromCID(item, cid);
+
+                } catch (e) {
+                    item.mw = 0; item.imgUrl = ''; item.foundName = '';
+                    item.error = "SMILES Fehler";
+                } finally {
+                    item.loading = false;
+                }
+            },
+
+            async applyDataFromCID(item, cid) {
+                let res = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/property/MolecularWeight,Title/JSON`);
+                let json = await res.json();
+                let props = json.PropertyTable?.Properties?.[0];
+
+                if (props) {
+                    item.mw = parseFloat(props.MolecularWeight);
+                    item.foundName = props.Title; // Das ist der Name aus der DB (Kontrolle für User!)
+                    item.imgUrl = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/PNG?image_size=300x300`;
+                    
+                    this.recalcStoich(item);
+                }
+            },
+
+            recalcStoich(item) {
+                if (item.mass > 0) this.calcFromMass(item);
+                else if (item.mmol > 0) this.calcFromMmol(item);
+            },
+
+            // --- STOICHIOMETRY ---
+            recalcAll() {
+                const lr = this.limiting;
+                if (!lr.mmol) return;
+                
+                // Edukte
+                this.reactants.forEach(r => {
+                    if (!r.isLimiting && r.mw) {
+                        r.mmol = parseFloat((lr.mmol * r.eq).toFixed(3));
+                        r.mass = parseFloat((r.mmol * r.mw).toFixed(1));
+                    }
+                });
+
+                // Produkt Theo Masse Update
+                // (Dies triggert die Computed Property 'theoMass', aber wir müssen Yield neu berechnen wenn sich Theo ändert?)
+                // Ja: Wenn sich Theo ändert, aber Actual Mass gleich bleibt, ändert sich Yield %.
+                this.$nextTick(() => {
+                    this.calcYieldFromActualMass();
+                });
+            },
+
+            calcFromMass(item) {
+                if (!item.mw) return;
+                item.mmol = parseFloat((item.mass / item.mw).toFixed(3));
+                if (item.isLimiting) this.recalcAll();
+                else if (this.limiting.mmol) item.eq = parseFloat((item.mmol / this.limiting.mmol).toFixed(2));
+            },
+            calcFromMmol(item) {
+                if (!item.mw) return;
+                item.mass = parseFloat((item.mmol * item.mw).toFixed(1));
+                if (item.isLimiting) this.recalcAll();
+                else if (this.limiting.mmol) item.eq = parseFloat((item.mmol / this.limiting.mmol).toFixed(2));
+            },
+            calcFromEq(item) {
+                if (item.isLimiting) return;
+                const lr = this.limiting;
+                item.mmol = parseFloat((lr.mmol * item.eq).toFixed(3));
+                if (item.mw) item.mass = parseFloat((item.mmol * item.mw).toFixed(1));
+            },
+            setLimiting(index) {
+                this.reactants.forEach((r, i) => r.isLimiting = (i === index));
+                this.reactants[index].eq = 1.0;
+                this.calcFromMass(this.reactants[index]);
+            },
+
+            // --- YIELD LOGIC (Bi-directional) ---
+            calcYieldFromActualMass() {
+                const theo = parseFloat(this.theoMass);
+                if (!theo || !this.product.actualMass) {
+                    if(!this.product.actualMass) this.product.yieldPercent = 0;
+                    return;
+                }
+                // Formel: (Ist / Theo) * 100
+                this.product.yieldPercent = parseFloat(((this.product.actualMass / theo) * 100).toFixed(1));
+            },
+            calcActualMassFromYield() {
+                const theo = parseFloat(this.theoMass);
+                if (!theo || this.product.yieldPercent === null) return;
+                // Formel: Theo * (Prozent / 100)
+                this.product.actualMass = parseFloat((theo * (this.product.yieldPercent / 100)).toFixed(1));
+            },
+
+            // --- UTILS ---
+            addReactant() { this.reactants.push({ id: Date.now(), input: '', suggestions:[], mw: 0, eq: 1, mmol: 0, mass: 0, isLimiting: false, imgUrl: '' }); },
+            addSolvent() { this.solvents.push({ vol: null, name: '' }); },
+            resetAll() {
+                this.reactants = [{ id: 1, input: '', suggestions:[], mw: 0, eq: 1, mmol: 0, mass: 0, isLimiting: true }];
+                this.solvents = [];
+                this.product = { input: '', suggestions:[], mw: 0, yieldPercent: null, actualMass: null };
+            },
+            loadExample() {
+                this.reactants = [
+                    { id: 1, input: 'Bromobenzene', suggestions:[], mw: 0, eq: 1.0, mmol: 0, mass: 157, isLimiting: true },
+                    { id: 2, input: 'Phenylboronic acid', suggestions:[], mw: 0, eq: 1.2, mmol: 0, mass: 0, isLimiting: false }
+                ];
+                this.solvents = [{ vol: 10, name: 'Toluol' }];
+                this.product = { input: 'Biphenyl', suggestions:[], mw: 0, yieldPercent: null, actualMass: null }; // Reset yield
+                
+                this.reactants.forEach(r => this.processSearch(r));
+                this.processSearch(this.product);
+            },
+            copyText() { navigator.clipboard.writeText(this.generatedProcedure); alert("Kopiert!"); }
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
